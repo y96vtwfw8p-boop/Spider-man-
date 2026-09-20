@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Spider-Man: Fan Game</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;background:#05070b;color:white;font-family:Arial,sans-serif}
+canvas{display:block}
+#menu,#pause,#missionFail{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(#07101ddd,#000b);z-index:10;text-align:center;padding:24px;box-sizing:border-box}
+h1{font-size:42px;margin:0 0 18px;color:#ff3344;text-shadow:0 0 10px rgba(255,0,0,0.5)} p{max-width:700px;line-height:1.5;font-size:16px}
+button{font-size:20px;padding:14px 28px;margin:7px;border:0;border-radius:12px;background:#e62429;color:#fff;font-weight:bold;cursor:pointer;box-shadow:0 4px 15px rgba(230,36,41,0.4);transition:transform 0.1s}
+button:active{transform:scale(0.95)}
+#pause,#missionFail{display:none}
+#hud{position:fixed;left:15px;top:15px;z-index:4;display:none;background:rgba(0,10,25,0.85);padding:14px;border-radius:12px;line-height:1.6;border:1px solid #ff2233;box-shadow:0 0 15px rgba(0,0,0,0.5)}
+#hud div{font-weight:bold;font-size:16px}
+#hint{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:4;background:rgba(0,0,0,0.8);padding:10px 18px;border-radius:20px;border:1px solid #ffd700;display:none;font-weight:bold;color:#fff}
+#mobile{position:fixed;inset:0;pointer-events:none;z-index:5;display:none;touch-action:none}
+#joy{position:absolute;left:24px;bottom:24px;width:125px;height:125px;border:2px solid rgba(255,255,255,0.4);border-radius:50%;background:rgba(255,255,255,0.1);pointer-events:auto}
+#stick{position:absolute;left:37px;top:37px;width:50px;height:50px;border-radius:50%;background:rgba(255,255,255,0.7);box-shadow:0 0 10px rgba(255,255,255,0.5)}
+.mbtn{position:absolute;width:76px;height:76px;border-radius:50%;border:2px solid #fff;background:rgba(230,36,41,0.8);color:#fff;font-weight:bold;font-size:14px;pointer-events:auto;box-shadow:0 4px 12px rgba(0,0,0,0.4)}
+.mbtn:active{background:rgba(255,50,60,1)}
+#jump{right:25px;bottom:34px} #web{right:110px;bottom:112px;background:rgba(20,120,255,0.85)}
+.small{font-size:13px;opacity:.8;margin-top:15px}
+</style>
+</head>
+<body>
+<div id="menu">
+<h1>Spider-Man: Fan Game</h1>
+<p>Вы — Человек-паук! Летайте на паутине по Нью-Йорку и собирайте награды.</p>
+<p><b>Управление:</b> Нажмите однократно на кнопку <b>«Паутина»</b> (или кликните по любому зданию), чтобы зацепиться паутиной и начать раскачиваться! Нажмите ещё раз, чтобы отцепиться.</p>
+<button id="play">ИГРАТЬ</button><button id="quit">ВЫЙТИ</button>
+<p class="small">Версия для браузера и мобильных устройств.</p>
+</div>
+<div id="pause"><h1>Пауза</h1><button id="resume">ПРОДОЛЖИТЬ</button><button id="saveExit">СОХРАНИТЬ И ВЫЙТИ</button></div>
+<div id="missionFail"><h1>МИССИЯ ПРОВАЛЕНА</h1><button id="retry">ПОВТОРИТЬ</button><button id="free">СВОБОДНЫЙ РЕЖИМ</button></div>
+<div id="hud">
+<div>❤️ Здоровье: <span id="hp">100</span></div>
+<div>💵 Баланс: $<span id="money">0</span></div>
+<div>🎯 <span id="objective">Собирайте жёлтые метки (+$15)</span></div>
+</div>
+<div id="hint">Наступайте на жёлтые круги, чтобы получать по $15!</div>
+<div id="mobile"><div id="joy"><div id="stick"></div></div><button class="mbtn" id="jump">Прыжок</button><button class="mbtn" id="web">Паутина</button><button class="mbtn" id="pauseBtn" style="right:18px;top:18px;width:56px;height:56px;font-size:12px">Ⅱ</button></div>
+
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+
+const menu=document.querySelector("#menu"), hud=document.querySelector("#hud"), mobile=document.querySelector("#mobile");
+const hint=document.querySelector("#hint"), pause=document.querySelector("#pause"), fail=document.querySelector("#missionFail");
+const hpEl=document.querySelector("#hp"), moneyEl=document.querySelector("#money"), objective=document.querySelector("#objective");
+
+let scene, camera, renderer, player, playerMesh, clock, paused=false, money=Number(localStorage.spMoney||0);
+let velocity=new THREE.Vector3(), keys={}, buildings=[], missionMarkers=[], swinging=false, anchor=new THREE.Vector3();
+let webLine=null, leftLeg, rightLeg, leftArm, rightArm;
+const WORLD_X=14000, WORLD_Z=10000, grid=400;
+
+function createBuildingTexture() {
+ const canvas = document.createElement('canvas');
+ canvas.width = 256; canvas.height = 512;
+ const ctx = canvas.getContext('2d');
+ ctx.fillStyle = '#22262c';
+ ctx.fillRect(0, 0, 256, 512);
+ 
+ for (let y = 10; y < 500; y += 24) {
+   for (let x = 10; x < 240; x += 20) {
+     const isLit = Math.random() > 0.35;
+     ctx.fillStyle = isLit ? (Math.random() > 0.2 ? '#ffe89c' : '#ffffff') : '#111418';
+     ctx.fillRect(x, y, 12, 16);
+   }
+ }
+ const texture = new THREE.CanvasTexture(canvas);
+ texture.wrapS = THREE.RepeatWrapping;
+ texture.wrapT = THREE.RepeatWrapping;
+ return texture;
+}
+
+function init(){
+ scene=new THREE.Scene(); scene.background=new THREE.Color(0x87ceeb);
+ scene.fog=new THREE.Fog(0x87ceeb, 1500, 6000);
+ camera=new THREE.PerspectiveCamera(65, innerWidth/innerHeight, .1, 8000);
+ renderer=new THREE.WebGLRenderer({antialias:true}); 
+ renderer.setSize(innerWidth, innerHeight); 
+ renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5)); 
+ renderer.shadowMap.enabled=true;
+ document.body.appendChild(renderer.domElement);
+ 
+ const ambient = new THREE.HemisphereLight(0xffffff, 0x444455, 1.8);
+ scene.add(ambient);
+ const sun=new THREE.DirectionalLight(0xffffff, 2.0); 
+ sun.position.set(2000, 4000, 1500); 
+ sun.castShadow=true; 
+ scene.add(sun);
+ 
+ const ground=new THREE.Mesh(new THREE.PlaneGeometry(WORLD_X, WORLD_Z), new THREE.MeshStandardMaterial({color:0x22252a, roughness:0.9})); 
+ ground.rotation.x=-Math.PI/2; 
+ ground.receiveShadow = true;
+ scene.add(ground);
+ 
+ buildCity(); 
+ makePlayer(); 
+ makeMissions(); 
+ setupInput(); 
+ resize(); 
+ clock=new THREE.Clock(); 
+ moneyEl.textContent = money;
+ animate();
+}
+
+function buildCity(){
+ const windowTex = createBuildingTexture();
+ const colors = [0x3a4b5c, 0x5c3a3a, 0x3a5c43, 0x4a4a52, 0x61533b, 0x2d3a4a];
+ 
+ // Дороги
+ const roadMat = new THREE.MeshStandardMaterial({color: 0x121417});
+ for(let x=-6800; x<=6800; x+=grid){
+   let r=new THREE.Mesh(new THREE.BoxGeometry(60, .05, WORLD_Z), roadMat);
+   r.position.set(x, .02, 0);
+   scene.add(r);
+ }
+
+ for(let x=-6600; x<=6600; x+=grid) {
+   for(let z=-4600; z<=4600; z+=grid){
+     let h = 80 + Math.floor(Math.abs(Math.sin(x*0.01 + z*0.02)) * 260); 
+     let w = 180; 
+     let d = 180;
+     
+     const col = colors[Math.floor(Math.abs(x + z)) % colors.length];
+     const mat = new THREE.MeshStandardMaterial({
+       color: col,
+       map: windowTex,
+       roughness: 0.5
+     });
+     
+     let b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+     b.position.set(x, h/2, z); 
+     b.castShadow=true; 
+     b.receiveShadow=true;
+     scene.add(b); 
+     buildings.push(b);
+   }
+ }
+}
+
+function makePlayer(){
+ const g = new THREE.Group();
+ 
+ const redMat = new THREE.MeshStandardMaterial({color: 0xd61c1c, roughness: 0.3});
+ const blueMat = new THREE.MeshStandardMaterial({color: 0x1b429b, roughness: 0.3});
+ const eyeMat = new THREE.MeshBasicMaterial({color: 0xffffff});
+ const blackMat = new THREE.MeshBasicMaterial({color: 0x111111});
+ 
+ // Торс
+ const torso = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.1, 0.45), redMat);
+ torso.position.y = 1.35;
+ 
+ // Вставка синего цвета на боках
+ const sideLeft = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.9, 0.46), blueMat);
+ sideLeft.position.set(0.32, 1.35, 0);
+ const sideRight = sideLeft.clone();
+ sideRight.position.x = -0.32;
+ 
+ // Эмблема паука
+ const spiderMat = new THREE.MeshBasicMaterial({color: 0x0a0a0a});
+ const spider = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 8), spiderMat);
+ spider.scale.set(1, 1.5, 0.2);
+ spider.position.set(0, 1.45, 0.24);
+ 
+ // Голова
+ const headGroup = new THREE.Group();
+ const head = new THREE.Mesh(new THREE.SphereGeometry(0.38, 16, 16), redMat);
+ head.scale.set(1, 1.15, 1);
+ head.position.y = 2.15;
+ headGroup.add(head);
+ 
+ // Глаза (линзы)
+ const eyeFrameL = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 12), blackMat);
+ eyeFrameL.scale.set(1.4, 0.8, 0.3);
+ eyeFrameL.position.set(0.14, 2.2, 0.32);
+ eyeFrameL.rotation.z = -0.2;
+ 
+ const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 12), eyeMat);
+ eyeL.scale.set(1.4, 0.8, 0.3);
+ eyeL.position.set(0.14, 2.2, 0.34);
+ eyeL.rotation.z = -0.2;
+
+ const eyeFrameR = eyeFrameL.clone();
+ eyeFrameR.position.x = -0.14;
+ eyeFrameR.rotation.z = 0.2;
+ 
+ const eyeR = eyeL.clone();
+ eyeR.position.x = -0.14;
+ eyeR.rotation.z = 0.2;
+ 
+ headGroup.add(eyeFrameL, eyeL, eyeFrameR, eyeR);
+ 
+ // Ноги
+ const legGeo = new THREE.BoxGeometry(0.32, 0.9, 0.32);
+ leftLeg = new THREE.Mesh(legGeo, blueMat);
+ leftLeg.position.set(0.22, 0.45, 0);
+ 
+ rightLeg = new THREE.Mesh(legGeo, blueMat);
+ rightLeg.position.set(-0.22, 0.45, 0);
+ 
+ // Сапоги
+ const bootGeo = new THREE.BoxGeometry(0.34, 0.35, 0.34);
+ const leftBoot = new THREE.Mesh(bootGeo, redMat);
+ leftBoot.position.y = -0.3;
+ leftLeg.add(leftBoot);
+ 
+ const rightBoot = leftBoot.clone();
+ rightLeg.add(rightBoot);
+
+ // Руки
+ const armGeo = new THREE.BoxGeometry(0.26, 0.85, 0.26);
+ leftArm = new THREE.Mesh(armGeo, redMat);
+ leftArm.position.set(0.55, 1.35, 0);
+ 
+ rightArm = new THREE.Mesh(armGeo, redMat);
+ rightArm.position.set(-0.55, 1.35, 0);
+ 
+ g.add(torso, sideLeft, sideRight, spider, headGroup, leftLeg, rightLeg, leftArm, rightArm);
+ g.position.set(0, 2, 0);
+ 
+ playerMesh = g;
+ scene.add(playerMesh);
+ player = playerMesh;
+}
+
+function makeMissions(){
+ missionMarkers.forEach(m => scene.remove(m));
+ missionMarkers = [];
+ 
+ const markerGeo = new THREE.CylinderGeometry(12, 12, 0.4, 32);
+ const markerMat = new THREE.MeshBasicMaterial({color: 0xffd700, transparent: true, opacity: 0.8});
+ const beamMat = new THREE.MeshBasicMaterial({color: 0xffea00, transparent: true, opacity: 0.25});
+ const beamGeo = new THREE.CylinderGeometry(8, 8, 300, 16);
+
+ for(let i = 0; i < 120; i++){
+   const rx = (Math.random() - 0.5) * 12000;
+   const rz = (Math.random() - 0.5) * 8500;
+   
+   const m = new THREE.Mesh(markerGeo, markerMat);
+   m.position.set(rx, 0.2, rz);
+   
+   const beam = new THREE.Mesh(beamGeo, beamMat);
+   beam.position.set(0, 150, 0);
+   m.add(beam);
+   
+   scene.add(m);
+   missionMarkers.push(m);
+ }
+}
+
+function toggleWebSwing() {
+ if (swinging) {
+   swinging = false;
+   if (webLine) { scene.remove(webLine); webLine = null; }
+ } else {
+   let bestHit = null;
+   let minDist = Infinity;
+   
+   const raycaster = new THREE.Raycaster();
+   const center = new THREE.Vector2(0, 0);
+   raycaster.setFromCamera(center, camera);
+   const hits = raycaster.intersectObjects(buildings);
+   
+   if (hits.length > 0) {
+     bestHit = hits[0].point;
+   } else {
+     // Если камера не направлена на здание, цепляемся за ближайшее высокое здание сверху
+     for (let b of buildings) {
+       const bPos = b.position.clone();
+       bPos.y += b.geometry.parameters.height / 2;
+       const d = player.position.distanceTo(bPos);
+       if (d < minDist && bPos.y > player.position.y + 10) {
+         minDist = d;
+         bestHit = bPos;
+       }
+     }
+   }
+   
+   if (bestHit && player.position.distanceTo(bestHit) < 1200) {
+     anchor.copy(bestHit);
+     swinging = true;
+     createWebLine();
+   }
+ }
+}
+
+function createWebLine() {
+ if (webLine) scene.remove(webLine);
+ const geom = new THREE.BufferGeometry().setFromPoints([player.position, anchor]);
+ const mat = new THREE.LineBasicMaterial({color: 0xffffff, linewidth: 3});
+ webLine = new THREE.Line(geom, mat);
+ scene.add(webLine);
+}
+
+function updateWebLine() {
+ if (webLine && swinging) {
+   const handPos = player.position.clone().add(new THREE.Vector3(0, 1.5, 0));
+   webLine.geometry.setFromPoints([handPos, anchor]);
+ }
+}
+
+function setupInput(){
+ addEventListener("keydown", e => {
+   keys[e.code] = true;
+   if(e.code === "Escape"){ paused = !paused; pause.style.display = paused ? "flex" : "none"; }
+   if(e.code === "KeyE") toggleWebSwing();
+ });
+ addEventListener("keyup", e => keys[e.code] = false);
+ 
+ renderer.domElement.addEventListener("pointerdown", e => {
+   if(menu.style.display !== "none" || paused) return;
+   if(e.clientX < 150 && e.clientY > innerHeight - 200) return; // Игнорируем область джойстика
+   
+   const mouse = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+   const ray = new THREE.Raycaster();
+   ray.setFromCamera(mouse, camera);
+   const hits = ray.intersectObjects(buildings);
+   
+   if(hits.length > 0){
+     anchor.copy(hits[0].point);
+     swinging = true;
+     createWebLine();
+   }
+ });
+
+ document.querySelector("#play").onclick = () => {
+   menu.style.display = "none"; hud.style.display = "block"; hint.style.display = "block"; mobile.style.display = "block";
+ };
+ document.querySelector("#quit").onclick = () => {
+   menu.innerHTML = "<h1>Спасибо за игру!</h1><p>Вы можете закрыть эту вкладку браузера.</p>";
+ };
+ document.querySelector("#resume").onclick = () => { paused = false; pause.style.display = "none"; };
+ document.querySelector("#saveExit").onclick = () => { localStorage.spMoney = money; location.reload(); };
+ document.querySelector("#retry").onclick = () => { fail.style.display = "none"; };
+ document.querySelector("#free").onclick = () => fail.style.display = "none";
+ document.querySelector("#jump").onpointerdown = () => { if(player.position.y <= 2.1) velocity.y = 22; };
+ document.querySelector("#web").onpointerdown = (e) => { e.stopPropagation(); toggleWebSwing(); };
+ document.querySelector("#pauseBtn").onpointerdown = () => { paused = !paused; pause.style.display = paused ? "flex" : "none"; };
+ 
+ // Виртуальный джойстик
+ let joy = document.querySelector("#joy"), stick = document.querySelector("#stick"), drag = false;
+ joy.onpointerdown = () => drag = true; 
+ joy.onpointerup = () => { drag = false; stick.style.left = "37px"; stick.style.top = "37px"; keys.KeyW = keys.KeyS = keys.KeyA = keys.KeyD = false; };
+ joy.onpointermove = e => {
+   if(!drag) return;
+   let r = joy.getBoundingClientRect(), x = e.clientX - r.left - 62.5, y = e.clientY - r.top - 62.5;
+   let len = Math.min(42, Math.hypot(x, y)), a = Math.atan2(y, x);
+   x = Math.cos(a) * len; y = Math.sin(a) * len;
+   stick.style.left = (37 + x) + "px"; stick.style.top = (37 + y) + "px";
+   keys.KeyW = y < -10; keys.KeyS = y > 10; keys.KeyA = x < -10; keys.KeyD = x > 10;
+ };
+}
+
+function update(dt){
+ if(paused) return;
+ 
+ // Увеличенная скорость ходьбы и бега
+ const moveSpeed = keys.ShiftLeft ? 65 : 38;
+ let dir = new THREE.Vector3((keys.KeyD?1:0) - (keys.KeyA?1:0), 0, (keys.KeyS?1:0) - (keys.KeyW?1:0));
+ 
+ if(dir.lengthSq() > 0) {
+   dir.normalize();
+   dir.applyAxisAngle(new THREE.Vector3(0, 1, 0), camera.rotation.y);
+   
+   // Анимация ног при беге
+   const t = clock.getElapsedTime() * 18;
+   leftLeg.rotation.x = Math.sin(t) * 0.7;
+   rightLeg.rotation.x = -Math.sin(t) * 0.7;
+   leftArm.rotation.x = -Math.sin(t) * 0.7;
+   rightArm.rotation.x = Math.sin(t) * 0.7;
+   
+   // Поворот игрока в сторону движения
+   const angle = Math.atan2(dir.x, dir.z);
+   playerMesh.rotation.y = THREE.MathUtils.lerp(playerMesh.rotation.y, angle, 0.15);
+ } else {
+   leftLeg.rotation.x = THREE.MathUtils.lerp(leftLeg.rotation.x, 0, 0.1);
+   rightLeg.rotation.x = THREE.MathUtils.lerp(rightLeg.rotation.x, 0, 0.1);
+   leftArm.rotation.x = THREE.MathUtils.lerp(leftArm.rotation.x, 0, 0.1);
+   rightArm.rotation.x = THREE.MathUtils.lerp(rightArm.rotation.x, 0, 0.1);
+ }
+ 
+ velocity.x = THREE.MathUtils.damp(velocity.x, dir.x * moveSpeed, 10, dt);
+ velocity.z = THREE.MathUtils.damp(velocity.z, dir.z * moveSpeed, 10, dt);
+ 
+ if(keys.Space && player.position.y <= 2.1) {
+   velocity.y = 24;
+ }
+ 
+ // Логика раскачивания на паутине
+ if(swinging){
+   const toAnchor = anchor.clone().sub(player.position);
+   const dist = toAnchor.length();
+   
+   if(dist > 15){
+     const pullForce = toAnchor.normalize().multiplyScalar(Math.min(120, dist * 2.8));
+     velocity.addScaledVector(pullForce, dt);
+   }
+   velocity.y -= 12 * dt; // Уменьшенная гравитация в полете
+   updateWebLine();
+ } else {
+   velocity.y -= 45 * dt; // Обычная гравитация
+ }
+ 
+ player.position.addScaledVector(velocity, dt);
+ 
+ // Границы пола
+ if(player.position.y < 2){
+   player.position.y = 2;
+   velocity.y = 0;
+   if(swinging) toggleWebSwing();
+ }
+ 
+ player.position.x = THREE.MathUtils.clamp(player.position.x, -6700, 6700);
+ player.position.z = THREE.MathUtils.clamp(player.position.z, -4700, 4700);
+ 
+ // Сбор желтых меток (+15$)
+ for(let i = 0; i < missionMarkers.length; i++){
+   const m = missionMarkers[i];
+   if(m.visible && player.position.distanceTo(m.position) < 18){
+     money += 15; // РОВНО 15 ДОЛЛАРОВ
+     moneyEl.textContent = money;
+     localStorage.spMoney = money;
+     
+     // Спавним метку в другом месте
+     m.position.x = (Math.random() - 0.5) * 12000;
+     m.position.z = (Math.random() - 0.5) * 8500;
+   }
+ }
+ 
+ // Следование камеры за Человеком-пауком
+ const camOffset = new THREE.Vector3(0, 6, 16);
+ camOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), playerMesh.rotation.y);
+ camera.position.lerp(player.position.clone().add(camOffset), 0.08);
+ camera.lookAt(player.position.clone().add(new THREE.Vector3(0, 2, 0)));
+}
+
+function animate(){
+ requestAnimationFrame(animate);
+ let dt = Math.min(clock.getDelta(), 0.05);
+ update(dt);
+ renderer.render(scene, camera);
+}
+
+function resize(){
+ addEventListener("resize", () => {
+   camera.aspect = innerWidth / innerHeight;
+   camera.updateProjectionMatrix();
+   renderer.setSize(innerWidth, innerHeight);
+ });
+}
+
+init();
+</script>
+</body>
+</html>
